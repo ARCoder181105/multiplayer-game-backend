@@ -1,64 +1,51 @@
-# Multiplayer Game Backend API
+# Single-Instance Multiplayer Game Scoring Backend
 
-A production-ready, server-authoritative backend for real-time multiplayer games. Built with Node.js, Express, Socket.io, MongoDB Atlas, and Upstash Redis.
+A lightweight, high-performance, single-instance scoring and leaderboard API built with Node.js, Express, Socket.io, MongoDB Atlas, and Upstash Redis.
 
-This API handles player authentication, real-time room management, anti-cheat score validation, and high-performance global leaderboards.
+This backend is tailored for streamlined game sessions where players enter their display name and a 6-digit registration number, play the game, and submit their score to compete on a live Top 10 global leaderboard.
 
 ---
 
 ## Key Features
 
-- **Lightweight Authentication**: Frictionless player registration using a display name and a unique 6-digit registration number (`100001` - `999999`). Stateless JWT session management (`7d` expiry).
-- **Server-Authoritative Game Engine**: Anti-cheat score validation ensuring score submissions only occur when game rooms are actively in progress, alongside mathematical bounds checking ($0 \le \text{score} \le 1,000,000$).
-- **Upstash Redis Leaderboards**: Powered by Upstash Redis (`@upstash/redis` HTTP REST SDK) for stable connection management across serverless and free tiers. Provides $O(\log N)$ sorted set queries for global rank, top players, and neighborhood rankings.
-- **Real-Time Room Management**: Socket.io WebSocket channels for room matchmaking, player join/leave broadcasts, live score synchronization, and game lifecycle tracking (`waiting` $\rightarrow$ `in_progress` $\rightarrow$ `ended`).
-- **Admin Control Panel**: Authenticated admin system (`ADMIN_SECRET`) to create game rooms with flexible player limits, control game states, and perform complete data resets for testing.
-- **Persistent Match & Stats Storage**: MongoDB Atlas storage for comprehensive match histories and cumulative player lifetime statistics (`totalGames`, `wins`, `losses`, `bestScore`, `avgScore`).
+- **Frictionless Entry**: Simple registration (`POST /api/auth/register`) with `name` and `registrationNumber` (`100001` - `999999`). Works seamlessly for both first-time registrations and returning logins without conflicts.
+- **Upstash Redis Top 10 Leaderboards**: Powered by Upstash Redis (`@upstash/redis` HTTP REST SDK) for $O(\log N)$ high-speed score updates and instant top player queries (`GET /api/leaderboard?limit=10`).
+- **Real-Time Score Broadcasts**: Socket.io WebSocket channels emit live `score_updated` events whenever any player submits a score, allowing frontends to display real-time leaderboard animations.
+- **Single-Command Reset**: A direct `DELETE /api/reset` endpoint wipes all player data from MongoDB and clears the Upstash Redis leaderboard instantly when you need to run a fresh game session.
 
 ---
 
-## System Workflow Overview
+## Game Workflow Overview
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Admin as Game Admin
     actor Player1 as Player 1 (Client)
     actor Player2 as Player 2 (Client)
     participant Server as Backend API
     participant Redis as Upstash Redis
 
-    Admin->>Server: POST /api/admin/login
-    Server-->>Admin: Admin JWT Token
-    Admin->>Server: POST /api/admin/rooms (create "ROOM-001")
-    
     Player1->>Server: POST /api/auth/register ("Alice", "100001")
-    Server-->>Player1: Player JWT Token + Profile
+    Server-->>Player1: { player: { name: "Alice", score: 0 }, token: "JWT..." }
     Player2->>Server: POST /api/auth/register ("Bob", "100002")
-    Server-->>Player2: Player JWT Token + Profile
+    Server-->>Player2: { player: { name: "Bob", score: 0 }, token: "JWT..." }
 
     Note over Player1,Server: Connect WebSocket via Authorization Token
     Player1->>Server: Socket connect + auth: { token }
     Player2->>Server: Socket connect + auth: { token }
 
-    Player1->>Server: POST /api/game/join ("ROOM-001")
-    Player2->>Server: POST /api/game/join ("ROOM-001")
-    Server-->>Player1: Socket broadcast: player_joined
-
-    Admin->>Server: POST /api/admin/rooms/ROOM-001/start
-    Server-->>Player1: Socket broadcast: game_started
-    Server-->>Player2: Socket broadcast: game_started
-
-    Player1->>Server: POST /api/game/submit-score (score: 850)
+    Note over Player1,Server: Gameplay & Score Submissions
+    Player1->>Server: POST /api/score/submit (score: 850)
     Server->>Redis: ZADD leaderboard:global 850 "100001"
-    Server-->>Player2: Socket broadcast: score_updated
+    Server-->>Player2: Socket broadcast: score_updated (Alice: 850)
 
-    Player2->>Server: POST /api/game/submit-score (score: 720)
-    Server->>Redis: ZADD leaderboard:global 720 "100002"
-    Server-->>Player1: Socket broadcast: score_updated
+    Player2->>Server: POST /api/score/submit (score: 920)
+    Server->>Redis: ZADD leaderboard:global 920 "100002"
+    Server-->>Player1: Socket broadcast: score_updated (Bob: 920)
 
-    Admin->>Server: POST /api/admin/rooms/ROOM-001/end
-    Server-->>Player1: Socket broadcast: game_ended (Winner: Alice)
+    Note over Player1,Server: Fetch Final Standings
+    Player1->>Server: GET /api/leaderboard?limit=10
+    Server-->>Player1: Top 10 Players [ { rank: 1, name: "Bob", score: 920 }, ... ]
 ```
 
 ---
@@ -71,7 +58,6 @@ sequenceDiagram
 - Upstash Redis Database (HTTP REST URL & Token)
 
 ### 2. Installation
-Clone the repository and install dependencies:
 ```bash
 git clone <your-repo-url>
 cd game-backend
@@ -79,7 +65,7 @@ npm install
 ```
 
 ### 3. Environment Configuration
-Copy `.env.example` to `.env` and fill in your connection parameters:
+Copy `.env.example` to `.env` and fill in your credentials:
 ```env
 PORT=3000
 NODE_ENV=development
@@ -87,10 +73,9 @@ MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/game-backend?appName=Clu
 UPSTASH_REDIS_REST_URL=https://your-endpoint.upstash.io
 UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token
 JWT_SECRET=your_jwt_secret_key
-ADMIN_SECRET=your_admin_secret_key
 CORS_ORIGINS=*
 ```
-*Note: If `MONGODB_URI` or `UPSTASH_REDIS_REST_URL` are omitted in development mode, the server will automatically fall back to clean in-memory mock stores.*
+*Note: If `MONGODB_URI` or `UPSTASH_REDIS_REST_URL` are omitted in development mode, the server automatically falls back to in-memory mock stores.*
 
 ### 4. Running the Server
 ```bash
@@ -105,71 +90,111 @@ npm start
 
 ## API Endpoints Reference
 
-### Authentication Requirements
-All protected player endpoints require a valid JWT token in the request header:
-```http
-Authorization: Bearer <player_jwt_token>
+### 1. Player Entry (`POST /api/auth/register`)
+Registers a new player or logs in an existing player seamlessly by their 6-digit registration number.
+
+**Request Body:**
+```json
+{
+  "name": "Alice",
+  "registrationNumber": "100001"
+}
 ```
-Admin endpoints require the admin JWT token obtained from `/api/admin/login`:
-```http
-Authorization: Bearer <admin_jwt_token>
+
+**Response (`201 Created` or `200 OK`):**
+```json
+{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsIn...",
+    "player": {
+      "id": "6a4f7557fd75db09a2c25a31",
+      "name": "Alice",
+      "registrationNumber": "100001",
+      "score": 0
+    }
+  }
+}
 ```
 
 ---
 
-### 1. Player Authentication (`/api/auth`)
+### 2. Score Submission (`POST /api/score/submit`)
+*(Requires Header: `Authorization: Bearer <token>`)* Submits or updates the player's final or average score. Also available via `/api/game/submit-score`.
 
-| Method | Endpoint | Description | Request Body |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/api/auth/register` | Registers a player or logs in an existing player by registration number. Returns JWT token (`7d` expiry) and lifetime profile stats. | `{ "name": "Alice", "registrationNumber": "100001" }` |
-| `GET` | `/api/auth/profile` | Returns the currently authenticated player's full profile and stats (`wins`, `losses`, `bestScore`, `avgScore`). | *None (Requires Player Auth)* |
+**Request Body:**
+```json
+{
+  "score": 850
+}
+```
 
----
-
-### 2. Game Rooms & Scoring (`/api/game`)
-
-| Method | Endpoint | Description | Request Body |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/api/game/join` | Joins a specific game room by ID. Subscribes the player to real-time socket events for that room. | `{ "roomId": "ROOM-001" }` |
-| `POST` | `/api/game/submit-score` | Submits a score for the player in their active game room. Validates room state and mathematical bounds ($0 \le score \le 1,000,000$). | `{ "roomId": "ROOM-001", "score": 850 }` |
-| `GET` | `/api/game/scoreboard/:roomId` | Retrieves the current real-time scoreboard for the specified room, ordered descending by score. | *None (Requires Player Auth)* |
-
----
-
-### 3. Global Leaderboard (`/api/leaderboard`)
-
-| Method | Endpoint | Description | Query / Path Parameters |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/api/leaderboard` | Returns the global Top-N players sorted descending by score in $O(\log N)$ time. | `?limit=10` (Default: `10`, Max: `100`) |
-| `GET` | `/api/leaderboard/:registrationNumber` | Returns the exact global rank (`1-indexed`) and best score for a specific player. | `:registrationNumber` (e.g., `100001`) |
-| `GET` | `/api/leaderboard/:registrationNumber/around` | Returns the surrounding leaderboard neighborhood ($\pm \text{range}$ rank positions) around a specific player. | `?range=5` (Default: `5`, Max: `25`) |
+**Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "data": {
+    "player": {
+      "id": "6a4f7557fd75db09a2c25a31",
+      "name": "Alice",
+      "registrationNumber": "100001",
+      "score": 850
+    }
+  }
+}
+```
 
 ---
 
-### 4. Statistics & Match History (`/api/stats` & `/api/matches`)
+### 3. Top 10 Leaderboard (`GET /api/leaderboard?limit=10`)
+Returns the global top players sorted descending by score (`O(log N)` lookup via Upstash Redis).
 
-| Method | Endpoint | Description | Path Parameters |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/api/stats/:registrationNumber` | Retrieves summary statistics (`totalGames`, `wins`, `losses`, `bestScore`, `avgScore`) for the given player. | `:registrationNumber` |
-| `GET` | `/api/matches/:registrationNumber` | Retrieves paginated historical match records (`roomId`, `startedAt`, `endedAt`, `winner`, `scoreboard`) for the given player. | `:registrationNumber` |
+**Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "data": {
+    "leaderboard": [
+      {
+        "rank": 1,
+        "registrationNumber": "100002",
+        "score": 920,
+        "name": "Bob"
+      },
+      {
+        "rank": 2,
+        "registrationNumber": "100001",
+        "score": 850,
+        "name": "Alice"
+      }
+    ],
+    "total": 2
+  }
+}
+```
 
 ---
 
-### 5. Admin Management (`/api/admin`)
+### 4. Direct Reset Endpoint (`DELETE /api/reset`)
+Wipes all player data from MongoDB and purges the global Upstash Redis leaderboard. Ideal for starting fresh between test runs or live sessions.
 
-| Method | Endpoint | Description | Request Body |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/api/admin/login` | Authenticates an admin using `ADMIN_SECRET`. Returns an admin JWT token (`24h` expiry). | `{ "adminSecret": "your_admin_secret" }` |
-| `POST` | `/api/admin/rooms` | Creates a new game room with configurable player capacity. *(Requires Admin Auth)* | `{ "roomId": "ROOM-001", "name": "Battle Arena", "maxPlayers": 10 }` |
-| `POST` | `/api/admin/rooms/:roomId/start` | Starts the room match (`status` transitions to `in_progress`). Broadcasts `game_started` socket event. *(Requires Admin Auth)* | *None* |
-| `POST` | `/api/admin/rooms/:roomId/end` | Ends the room match (`status` transitions to `ended`), calculates the winner, records match history, and updates lifetime win/loss statistics. *(Requires Admin Auth)* | *None* |
-| `DELETE` | `/api/admin/data/reset` | **Complete Reset**: Deletes all active rooms, purges all player and match records in MongoDB, and resets the global Upstash Redis leaderboard. *(Requires Admin Auth)* | *None* |
+**Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "data": {
+    "message": "All game data and leaderboards have been reset successfully.",
+    "deletedPlayers": 2,
+    "leaderboardReset": true
+  }
+}
+```
 
 ---
 
-## WebSocket (Socket.io) Integration Reference
+## WebSocket (Socket.io) Real-Time Events Reference
 
-Establish a real-time connection from your game client passing the JWT token inside the handshake `auth` object:
+Connect to the Socket.io server using the JWT token returned from registration:
 
 ```javascript
 import { io } from "socket.io-client";
@@ -181,39 +206,18 @@ const socket = io("http://localhost:3000", {
 });
 ```
 
-### Client-to-Server Events (`socket.emit`)
-| Event Name | Payload Format | Description |
-| :--- | :--- | :--- |
-| `join_room` | `{ "roomId": "ROOM-001" }` | Subscribes the socket instance to the designated room channel. |
-| `leave_room` | `{ "roomId": "ROOM-001" }` | Unsubscribes the socket instance from the designated room channel. |
-| `player_ready` | `{ "roomId": "ROOM-001", "ready": true }` | Updates the player's lobby readiness status prior to game start. |
-| `submit_action` | `{ "roomId": "ROOM-001", "actionType": "MOVE", "payload": {...} }` | Relays client gameplay actions directly to all other connected participants in the room. |
-
 ### Server-to-Client Events (`socket.on`)
-| Event Name | Payload Format | Description |
+| Event Name | Payload Example | Description |
 | :--- | :--- | :--- |
-| `room_state` | `{ room: { id, name, status, playerCount, players: [...] } }` | Transmitted immediately after joining a room to provide the initial lobby state. |
-| `player_joined` | `{ playerId, name, regNo, playerCount }` | Broadcast to all room participants when a new player joins. |
-| `player_left` | `{ playerId, name, regNo, playerCount }` | Broadcast to all room participants when a player leaves or disconnects. |
-| `game_started` | `{ roomId, startedAt }` | Broadcast when the administrator initiates the match (`status` becomes `in_progress`). |
-| `score_updated` | `{ playerId, score, scoreboard: [...] }` | Broadcast in real time whenever any participant submits a valid score. |
-| `game_ended` | `{ roomId, results: { winner: {...}, scoreboard: [...] } }` | Broadcast when the match ends, containing final standings and winner determination. |
-| `error` | `{ message: "Room is currently full." }` | Sent directly to the emitting socket if an action fails validation check. |
+| `score_updated` | `{ registrationNumber: "100001", name: "Alice", score: 850, leaderboard: [...] }` | Broadcast immediately when any participant submits a score update. Includes the updated Top 10 standings. |
+| `leaderboard_updated` | `{ leaderboard: [ { rank: 1, name: "Bob", score: 920 }, ... ] }` | Broadcast live to all screens/projectors whenever any player finishes and submits their score. |
+| `data_reset` | `{ message: "All game data has been reset." }` | Broadcast to all clients when `DELETE /api/reset` is called. |
 
 ---
 
 ## Deployment on Render
 
-This project includes a ready-to-use `render.yaml` blueprint for immediate deployment on [Render](https://render.com/):
-
 1. Push this repository to GitHub.
 2. In your Render Dashboard, select **New $\rightarrow$ Blueprint** and connect your repository.
-3. Configure your production environment secrets when prompted:
-   - `MONGODB_URI`
-   - `UPSTASH_REDIS_REST_URL`
-   - `UPSTASH_REDIS_REST_TOKEN`
-   - `JWT_SECRET`
-   - `ADMIN_SECRET`
-4. Render will build (`npm install`) and start (`npm start`) the application automatically.
-
-For further architectural details, code examples, and full request/response payloads, refer to `API_DOCUMENTATION.md`.
+3. Configure your production environment secrets (`MONGODB_URI`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `JWT_SECRET`).
+4. Render will build (`npm install`) and start (`npm start`) automatically.

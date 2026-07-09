@@ -1,18 +1,19 @@
 const { getRedis } = require('../config/redis');
 const logger = require('../utils/logger');
+const Player = require('../models/Player');
 
 const LEADERBOARD_KEY = 'leaderboard:global';
 
 /**
- * Leaderboard service powered by Redis Sorted Sets.
+ * Leaderboard service powered by Redis Sorted Sets with MongoDB enrichment.
  * O(log N) for updates, O(log N + M) for range queries.
  */
 const leaderboardService = {
   /**
    * Update a player's score in the leaderboard.
-   * Uses ZADD to set the score (replaces if player exists).
+   * Uses ZADD to set the score.
    * @param {string} registrationNumber
-   * @param {number} totalScore - Player's cumulative total score
+   * @param {number} totalScore - Player's cumulative or average score
    */
   async updateScore(registrationNumber, totalScore) {
     const redis = getRedis();
@@ -21,66 +22,38 @@ const leaderboardService = {
   },
 
   /**
-   * Increment a player's leaderboard score.
-   * @param {string} registrationNumber
-   * @param {number} increment
-   */
-  async incrementScore(registrationNumber, increment) {
-    const redis = getRedis();
-    const newScore = await redis.zincrby(LEADERBOARD_KEY, increment, registrationNumber);
-    logger.debug(`Leaderboard incremented: ${registrationNumber} += ${increment} → ${newScore}`);
-    return parseFloat(newScore);
-  },
-
-  /**
-   * Get top N players.
+   * Get top N players enriched with player names from MongoDB.
    * @param {number} count - How many to return (default 10)
-   * @returns {Array<{ rank, registrationNumber, score }>}
+   * @returns {Array<{ rank, registrationNumber, name, score }>}
    */
   async getTopPlayers(count = 10) {
     const redis = getRedis();
     const results = await redis.zrevrange(LEADERBOARD_KEY, 0, count - 1, 'WITHSCORES');
-    return this._parseResults(results);
-  },
+    const parsed = this._parseResults(results);
 
-  /**
-   * Get a player's rank (0-indexed from Redis, we return 1-indexed).
-   * @param {string} registrationNumber
-   * @returns {{ rank, score } | null}
-   */
-  async getPlayerRank(registrationNumber) {
-    const redis = getRedis();
-    const rank = await redis.zrevrank(LEADERBOARD_KEY, registrationNumber);
+    // If Redis is empty, fall back to querying MongoDB directly
+    if (parsed.length === 0) {
+      const dbPlayers = await Player.find().sort({ score: -1 }).limit(count).lean();
+      return dbPlayers.map((p, index) => ({
+        rank: index + 1,
+        registrationNumber: p.registrationNumber,
+        name: p.name,
+        score: p.score || 0,
+      }));
+    }
 
-    if (rank === null) return null;
+    // Enrich with names from MongoDB
+    const regNos = parsed.map(p => p.registrationNumber);
+    const dbPlayers = await Player.find({ registrationNumber: { $in: regNos } }).lean();
+    const nameMap = {};
+    dbPlayers.forEach(p => {
+      nameMap[p.registrationNumber] = p.name;
+    });
 
-    const score = await redis.zscore(LEADERBOARD_KEY, registrationNumber);
-    return {
-      rank: rank + 1,
-      registrationNumber,
-      score: parseFloat(score),
-    };
-  },
-
-  /**
-   * Get players around a specific player (±range).
-   * @param {string} registrationNumber
-   * @param {number} range - How many players above/below (default 5)
-   */
-  async getAroundPlayer(registrationNumber, range = 5) {
-    const redis = getRedis();
-    const rank = await redis.zrevrank(LEADERBOARD_KEY, registrationNumber);
-
-    if (rank === null) return null;
-
-    const start = Math.max(0, rank - range);
-    const stop = rank + range;
-
-    const results = await redis.zrevrange(LEADERBOARD_KEY, start, stop, 'WITHSCORES');
-    return {
-      playerRank: rank + 1,
-      players: this._parseResults(results, start),
-    };
+    return parsed.map(p => ({
+      ...p,
+      name: nameMap[p.registrationNumber] || 'Unknown Player',
+    }));
   },
 
   /**
@@ -88,7 +61,11 @@ const leaderboardService = {
    */
   async getTotalPlayers() {
     const redis = getRedis();
-    return redis.zcard(LEADERBOARD_KEY);
+    const count = await redis.zcard(LEADERBOARD_KEY);
+    if (count === 0) {
+      return Player.countDocuments();
+    }
+    return count;
   },
 
   /**
@@ -110,7 +87,6 @@ const leaderboardService = {
 
   /**
    * Parse WITHSCORES results from Redis.
-   * Redis returns: [member1, score1, member2, score2, ...]
    */
   _parseResults(results, startRank = 0) {
     const players = [];

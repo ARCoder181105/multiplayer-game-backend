@@ -1,11 +1,11 @@
 const rateLimit = require('express-rate-limit');
 
 /**
- * General API rate limiter — 100 requests per minute per IP.
+ * General API rate limiter — 1000 requests per minute per IP.
  */
 const generalLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 100,
+  max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -18,11 +18,12 @@ const generalLimiter = rateLimit({
 });
 
 /**
- * Stricter limiter for auth endpoints — 10 requests per minute per IP.
+ * Auth limiter — 300 requests per minute per IP.
+ * High enough so 250+ players at a live LAN/event on shared WiFi can register smoothly.
  */
 const authLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -35,11 +36,11 @@ const authLimiter = rateLimit({
 });
 
 /**
- * Score submission limiter — 30 requests per minute per IP.
+ * Score submission limiter — 120 requests per minute per IP.
  */
 const scoreLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 30,
+  max: 120,
   standardHeaders: true,
   legacyHeaders: false,
   message: {

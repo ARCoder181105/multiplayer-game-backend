@@ -7,18 +7,17 @@ const cors = require('cors');
 const env = require('./config/env');
 const { connectDB } = require('./config/db');
 const { connectRedis } = require('./config/redis');
-const { initSocket } = require('./socket/index');
+const { initSocket, getIO } = require('./socket/index');
 const { generalLimiter } = require('./middleware/rateLimiter');
 const logger = require('./utils/logger');
 const { AppError } = require('./utils/errors');
+const Player = require('./models/Player');
+const leaderboardService = require('./services/leaderboardService');
 
 // ─── Routes ──────────────────────────────────────────────────────────
 const authRoutes = require('./routes/auth');
-const adminRoutes = require('./routes/admin');
 const gameRoutes = require('./routes/game');
 const leaderboardRoutes = require('./routes/leaderboard');
-const matchRoutes = require('./routes/matches');
-const statsRoutes = require('./routes/stats');
 
 // ─── Express App ─────────────────────────────────────────────────────
 const app = express();
@@ -58,11 +57,46 @@ app.get('/health', (req, res) => {
 
 // ─── API Routes ──────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
-app.use('/api/admin', adminRoutes);
 app.use('/api/game', gameRoutes);
+app.use('/api/score', gameRoutes); // Alias: POST /api/score/submit-score -> POST /api/score/submit
+app.post('/api/score/submit', gameRoutes); // Direct POST /api/score/submit
 app.use('/api/leaderboard', leaderboardRoutes);
-app.use('/api/matches', matchRoutes);
-app.use('/api/stats', statsRoutes);
+
+// Direct reset endpoint: DELETE /api/reset (no admin login or secret required)
+app.delete('/api/reset', async (req, res, next) => {
+  try {
+    let deletedPlayers = 0;
+
+    try {
+      const result = await Player.deleteMany({});
+      deletedPlayers = result.deletedCount;
+      await leaderboardService.reset();
+    } catch (err) {
+      logger.error('Failed to reset database (DB may be unavailable):', err.message);
+    }
+
+    // Broadcast reset event to all connected sockets
+    try {
+      const io = getIO();
+      if (io) {
+        io.emit('data_reset', { message: 'All game data has been reset.' });
+      }
+    } catch (e) {
+      // Ignore socket emit error if uninitialized
+    }
+
+    res.json({
+      success: true,
+      data: {
+        message: 'All game data and leaderboards have been reset successfully.',
+        deletedPlayers,
+        leaderboardReset: true,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ─── 404 Handler ─────────────────────────────────────────────────────
 app.use((req, res) => {

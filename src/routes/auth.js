@@ -6,7 +6,7 @@ const env = require('../config/env');
 const { authenticate } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { authLimiter } = require('../middleware/rateLimiter');
-const { ConflictError, NotFoundError } = require('../utils/errors');
+const { NotFoundError } = require('../utils/errors');
 
 const router = express.Router();
 
@@ -30,25 +30,30 @@ function generateToken(player) {
       role: 'player',
     },
     env.JWT_SECRET,
-    { expiresIn: '24h' }
+    { expiresIn: '7d' }
   );
 }
 
 // ─── POST /api/auth/register ─────────────────────────────────────────
+// Seamless entry: registers if new, logs in if already existing.
 router.post('/register', authLimiter, validate(registerSchema), async (req, res, next) => {
   try {
     const { name, registrationNumber } = req.body;
 
-    // Check if already registered
-    const existing = await Player.findOne({ registrationNumber });
-    if (existing) {
-      throw new ConflictError(`Registration number ${registrationNumber} is already registered.`);
+    let player = await Player.findOne({ registrationNumber });
+    let isNew = false;
+
+    if (!player) {
+      player = await Player.create({ name, registrationNumber, score: 0 });
+      isNew = true;
+    } else if (player.name !== name) {
+      player.name = name;
+      await player.save();
     }
 
-    const player = await Player.create({ name, registrationNumber });
     const token = generateToken(player);
 
-    res.status(201).json({
+    res.status(isNew ? 201 : 200).json({
       success: true,
       data: {
         token,
@@ -67,7 +72,7 @@ router.post('/login', authLimiter, validate(loginSchema), async (req, res, next)
 
     const player = await Player.findOne({ registrationNumber });
     if (!player) {
-      throw new NotFoundError('Player not found. Please register first.');
+      throw new NotFoundError('Player not found. Please check your registration number or register first.');
     }
 
     const token = generateToken(player);

@@ -2,7 +2,8 @@ const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 const logger = require('../utils/logger');
-const { registerRoomEvents } = require('./roomEvents');
+
+let ioInstance = null;
 
 /**
  * Initialize Socket.io with JWT authentication on handshake.
@@ -14,11 +15,13 @@ function initSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: {
       origin: corsOrigins,
-      methods: ['GET', 'POST'],
+      methods: ['GET', 'POST', 'DELETE'],
     },
     pingTimeout: 60000,
     pingInterval: 25000,
   });
+
+  ioInstance = io;
 
   // ─── Authentication Middleware ───────────────────────────────────
   io.use((socket, next) => {
@@ -41,9 +44,6 @@ function initSocket(httpServer) {
   io.on('connection', (socket) => {
     logger.info(`🔌 Socket connected: ${socket.player.name || 'admin'} (${socket.id})`);
 
-    // Register room event handlers
-    registerRoomEvents(io, socket);
-
     // Heartbeat
     socket.on('ping', () => {
       socket.emit('pong', { timestamp: Date.now() });
@@ -62,4 +62,8 @@ function initSocket(httpServer) {
   return io;
 }
 
-module.exports = { initSocket };
+function getIO() {
+  return ioInstance;
+}
+
+module.exports = { initSocket, getIO };
