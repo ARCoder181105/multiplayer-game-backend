@@ -1,0 +1,32 @@
+{
+  "name": "game-backend",
+  "version": "1.0.0",
+  "description": "Multiplayer game backend API — registration, scoring, leaderboard, real-time rooms",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node --watch src/app.js"
+  },
+  "keywords": [
+    "game",
+    "backend",
+    "multiplayer",
+    "leaderboard",
+    "socket.io"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@upstash/redis": "^1.38.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "ioredis": "^5.4.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5",
+    "socket.io": "^4.8.1",
+    "winston": "^3.17.0",
+    "zod": "^3.24.1"
+  }
+}
